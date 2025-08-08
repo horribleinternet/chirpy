@@ -20,6 +20,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
@@ -37,25 +38,25 @@ const adminTemplate = "<html><body><h1>Welcome, Chirpy Admin</h1><p>Chirpy has b
 
 func (cfg *apiConfig) handleMetrics(writer http.ResponseWriter, req *http.Request) {
 	writer.Header()["Content-Type"] = []string{"text/html; charset=utf-8"}
-	writer.WriteHeader(200)
+	writer.WriteHeader(http.StatusOK)
 	writer.Write([]byte(fmt.Sprintf(adminTemplate, cfg.fileserverHits.Load())))
-}
-
-func (cfg *apiConfig) handleReset(writer http.ResponseWriter, req *http.Request) {
-	cfg.fileserverHits.Store(0)
-	writer.Header()["Content-Type"] = []string{"text/plain; charset=utf-8"}
-	writer.WriteHeader(200)
-	writer.Write([]byte(fmt.Sprintf("Hits: %d", cfg.fileserverHits.Load())))
 }
 
 func handleHealthz(writer http.ResponseWriter, req *http.Request) {
 	writer.Header()["Content-Type"] = []string{"text/plain; charset=utf-8"}
-	writer.WriteHeader(200)
+	writer.WriteHeader(http.StatusOK)
 	writer.Write([]byte("OK"))
 }
 
 type chirpMsg struct {
-	Body string `json:"body"`
+	Body   string    `json:"body"`
+	UserId uuid.UUID `json:"user_id"`
+}
+
+type createHeader struct {
+	Id        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type chirpErr struct {
@@ -63,8 +64,8 @@ type chirpErr struct {
 }
 
 type chirpResp struct {
-	//Valid bool `json:"valid"`
-	Cleaned string `json:"cleaned_body"`
+	createHeader
+	chirpMsg
 }
 
 type addUser struct {
@@ -73,26 +74,23 @@ type addUser struct {
 }
 
 type addedUser struct {
-	Id        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	createHeader
+	Email string `json:"email"`
 }
 
+const dbEnv = "DB_URL"
+const platformEnv = "PLATFORM"
+const devPlatform = "dev"
 const lengthLimit = 140
 const jsonContent = "application/json"
 const marshalErrorTemplate = "{\"error\":\"Marshal error \"%s\" when trying to respond to \"%s\"}"
-const marshalError = 500
-const genericError = 400
-const genericSuccess = 200
-const createdSuccess = 201
 
 var dirtyWords = []string{"kerfuffle", "sharbert", "fornax"}
 
 func handleJsonWrite(writer http.ResponseWriter, code int, msg string, jsonStruct any) {
 	resp, err := json.Marshal(jsonStruct)
 	if err != nil {
-		writer.WriteHeader(marshalError)
+		writer.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(writer, marshalErrorTemplate, err, msg)
 	} else {
 		writer.WriteHeader(code)
@@ -110,22 +108,30 @@ func clean(dirty string) string {
 	return strings.Join(words, " ")
 }
 
-func handleValidate(writer http.ResponseWriter, req *http.Request) {
+func chirpConv(dbChirp database.Chirp) chirpResp {
+	return chirpResp{createHeader: createHeader{Id: dbChirp.ID, CreatedAt: dbChirp.CreatedAt, UpdatedAt: dbChirp.UpdatedAt},
+		chirpMsg: chirpMsg{Body: dbChirp.Body, UserId: dbChirp.UserID}}
+}
+
+func (cfg *apiConfig) handleChirp(writer http.ResponseWriter, req *http.Request) {
 	writer.Header()["Content-Type"] = []string{jsonContent}
 	decoder := json.NewDecoder(req.Body)
 	msg := chirpMsg{}
 	if err := decoder.Decode(&msg); err != nil {
-		handleJsonWrite(writer, genericError, msg.Body, chirpErr{Error: err.Error()})
+		handleJsonWrite(writer, http.StatusBadRequest, msg.Body, chirpErr{Error: err.Error()})
 	} else if len(msg.Body) > lengthLimit {
-		handleJsonWrite(writer, genericError, msg.Body, chirpErr{Error: "Chirp is too long"})
+		handleJsonWrite(writer, http.StatusBadRequest, msg.Body, chirpErr{Error: "Chirp is too long"})
 	} else {
-		//handleJsonWrite(writer, genericSuccess, msg.Body, chirpResp{Valid: true})
-		handleJsonWrite(writer, genericSuccess, msg.Body, chirpResp{Cleaned: clean(msg.Body)})
+		chirp, err := cfg.dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{Body: clean(msg.Body), UserID: msg.UserId})
+		if err != nil {
+			handleJsonWrite(writer, http.StatusBadRequest, msg.Body, chirpErr{Error: err.Error()})
+		}
+		handleJsonWrite(writer, http.StatusCreated, msg.Body, chirpConv(chirp))
 	}
 }
 
 func userConv(dbUser database.User) addedUser {
-	return addedUser{Id: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt, Email: dbUser.Email}
+	return addedUser{createHeader: createHeader{Id: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt}, Email: dbUser.Email}
 }
 
 func (cfg *apiConfig) handleUsers(writer http.ResponseWriter, req *http.Request) {
@@ -133,32 +139,49 @@ func (cfg *apiConfig) handleUsers(writer http.ResponseWriter, req *http.Request)
 	decoder := json.NewDecoder(req.Body)
 	msg := addUser{}
 	if err := decoder.Decode(&msg); err != nil {
-		handleJsonWrite(writer, genericError, msg.Email, chirpErr{Error: err.Error()})
+		handleJsonWrite(writer, http.StatusBadRequest, msg.Email, chirpErr{Error: err.Error()})
 		return
 	}
 	user, err := cfg.dbQueries.CreateUser(req.Context(), msg.Email)
 	if err != nil {
-		handleJsonWrite(writer, genericError, msg.Email, chirpErr{Error: err.Error()})
+		handleJsonWrite(writer, http.StatusBadRequest, msg.Email, chirpErr{Error: err.Error()})
 		return
 	}
-	handleJsonWrite(writer, createdSuccess, msg.Email, userConv(user))
+	handleJsonWrite(writer, http.StatusCreated, msg.Email, userConv(user))
+}
+
+func (cfg *apiConfig) handleReset(writer http.ResponseWriter, req *http.Request) {
+	writer.Header()["Content-Type"] = []string{"text/plain; charset=utf-8"}
+	if cfg.platform != devPlatform {
+		writer.WriteHeader(http.StatusForbidden)
+		writer.Write([]byte("forbidden"))
+		return
+	}
+	cfg.fileserverHits.Store(0)
+	if err := cfg.dbQueries.ResetUsers(req.Context()); err != nil {
+		writer.WriteHeader(http.StatusBadRequest)
+		writer.Write([]byte(err.Error()))
+	} else {
+		writer.WriteHeader(http.StatusOK)
+		writer.Write([]byte(fmt.Sprintf("Hits: %d", cfg.fileserverHits.Load())))
+	}
 }
 
 func main() {
 	godotenv.Load()
-	dbURL := os.Getenv("DB_URL")
+	dbURL := os.Getenv(dbEnv)
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	apiConf := &apiConfig{dbQueries: database.New(db)}
+	apiConf := &apiConfig{dbQueries: database.New(db), platform: os.Getenv(platformEnv)}
 	serverMux := http.NewServeMux()
 	serverMux.Handle("/app/", http.StripPrefix("/app", apiConf.middlewareHandlerMetricsInc(http.FileServer(http.Dir(".")))))
 	serverMux.HandleFunc("GET /api/healthz", handleHealthz)
 	serverMux.HandleFunc("GET /admin/metrics", apiConf.handleMetrics)
 	serverMux.HandleFunc("POST /admin/reset", apiConf.handleReset)
-	serverMux.HandleFunc("POST /api/validate_chirp", apiConf.middlewareMetricsInc(handleValidate))
+	serverMux.HandleFunc("POST /api/chirps", apiConf.middlewareMetricsInc(apiConf.handleChirp))
 	serverMux.HandleFunc("POST /api/users", apiConf.middlewareMetricsInc(apiConf.handleUsers))
 	server := http.Server{Handler: serverMux, Addr: ":8080"}
 	err = server.ListenAndServe()
