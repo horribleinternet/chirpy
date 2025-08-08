@@ -33,4 +33,6 @@ go.work.sum
 
 # executable
 chirpy
+connect.txt
+.env
 
