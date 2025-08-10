@@ -37,13 +37,13 @@ func (cfg *apiConfig) middlewareHandlerMetricsInc(next http.Handler) http.Handle
 const adminTemplate = "<html><body><h1>Welcome, Chirpy Admin</h1><p>Chirpy has been visited %d times!</p></body></html>"
 
 func (cfg *apiConfig) handleMetrics(writer http.ResponseWriter, req *http.Request) {
-	writer.Header()["Content-Type"] = []string{"text/html; charset=utf-8"}
+	writer.Header()["Content-Type"] = []string{textContent}
 	writer.WriteHeader(http.StatusOK)
 	writer.Write([]byte(fmt.Sprintf(adminTemplate, cfg.fileserverHits.Load())))
 }
 
 func handleHealthz(writer http.ResponseWriter, req *http.Request) {
-	writer.Header()["Content-Type"] = []string{"text/plain; charset=utf-8"}
+	writer.Header()["Content-Type"] = []string{textContent}
 	writer.WriteHeader(http.StatusOK)
 	writer.Write([]byte("OK"))
 }
@@ -83,6 +83,7 @@ const platformEnv = "PLATFORM"
 const devPlatform = "dev"
 const lengthLimit = 140
 const jsonContent = "application/json"
+const textContent = "text/plain; charset=utf-8"
 const marshalErrorTemplate = "{\"error\":\"Marshal error \"%s\" when trying to respond to \"%s\"}"
 
 var dirtyWords = []string{"kerfuffle", "sharbert", "fornax"}
@@ -139,7 +140,7 @@ func (cfg *apiConfig) handleUsers(writer http.ResponseWriter, req *http.Request)
 	decoder := json.NewDecoder(req.Body)
 	msg := addUser{}
 	if err := decoder.Decode(&msg); err != nil {
-		handleJsonWrite(writer, http.StatusBadRequest, msg.Email, chirpErr{Error: err.Error()})
+		handleJsonWrite(writer, http.StatusBadRequest, "Createuser", chirpErr{Error: err.Error()})
 		return
 	}
 	user, err := cfg.dbQueries.CreateUser(req.Context(), msg.Email)
@@ -151,7 +152,7 @@ func (cfg *apiConfig) handleUsers(writer http.ResponseWriter, req *http.Request)
 }
 
 func (cfg *apiConfig) handleReset(writer http.ResponseWriter, req *http.Request) {
-	writer.Header()["Content-Type"] = []string{"text/plain; charset=utf-8"}
+	writer.Header()["Content-Type"] = []string{textContent}
 	if cfg.platform != devPlatform {
 		writer.WriteHeader(http.StatusForbidden)
 		writer.Write([]byte("forbidden"))
@@ -165,6 +166,20 @@ func (cfg *apiConfig) handleReset(writer http.ResponseWriter, req *http.Request)
 		writer.WriteHeader(http.StatusOK)
 		writer.Write([]byte(fmt.Sprintf("Hits: %d", cfg.fileserverHits.Load())))
 	}
+}
+
+func (cfg *apiConfig) handleChirps(writer http.ResponseWriter, req *http.Request) {
+	writer.Header()["Content-Type"] = []string{jsonContent}
+	chirps, err := cfg.dbQueries.GetChirps(req.Context())
+	if err != nil {
+		handleJsonWrite(writer, http.StatusBadRequest, "GetChirps", chirpErr{Error: err.Error()})
+		return
+	}
+	jsonChirps := make([]chirpResp, len(chirps))
+	for i := range chirps {
+		jsonChirps[i] = chirpConv(chirps[i])
+	}
+	handleJsonWrite(writer, http.StatusOK, "GetChirps", jsonChirps)
 }
 
 func main() {
@@ -183,6 +198,7 @@ func main() {
 	serverMux.HandleFunc("POST /admin/reset", apiConf.handleReset)
 	serverMux.HandleFunc("POST /api/chirps", apiConf.middlewareMetricsInc(apiConf.handleChirp))
 	serverMux.HandleFunc("POST /api/users", apiConf.middlewareMetricsInc(apiConf.handleUsers))
+	serverMux.HandleFunc("GET /api/chirps", apiConf.middlewareMetricsInc(apiConf.handleChirps))
 	server := http.Server{Handler: serverMux, Addr: ":8080"}
 	err = server.ListenAndServe()
 	fmt.Println(err)
