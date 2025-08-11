@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"database/sql"
 	"encoding/json"
@@ -69,8 +70,8 @@ type chirpResp struct {
 }
 
 type addUser struct {
-	//Valid bool `json:"valid"`
-	Email string `json:"email"`
+	Password string `json:"password"`
+	Email    string `json:"email"`
 }
 
 type addedUser struct {
@@ -131,7 +132,7 @@ func (cfg *apiConfig) handleChirp(writer http.ResponseWriter, req *http.Request)
 	}
 }
 
-func userConv(dbUser database.User) addedUser {
+func userConv(dbUser database.CreateUserRow) addedUser {
 	return addedUser{createHeader: createHeader{Id: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt}, Email: dbUser.Email}
 }
 
@@ -143,7 +144,12 @@ func (cfg *apiConfig) handleUsers(writer http.ResponseWriter, req *http.Request)
 		handleJsonWrite(writer, http.StatusBadRequest, "Createuser", chirpErr{Error: err.Error()})
 		return
 	}
-	user, err := cfg.dbQueries.CreateUser(req.Context(), msg.Email)
+	hashed, err := auth.HashPassword(msg.Password)
+	if err != nil {
+		handleJsonWrite(writer, http.StatusInternalServerError, "hash password", chirpErr{Error: err.Error()})
+		return
+	}
+	user, err := cfg.dbQueries.CreateUser(req.Context(), database.CreateUserParams{Email: msg.Email, HashedPassword: hashed})
 	if err != nil {
 		handleJsonWrite(writer, http.StatusBadRequest, msg.Email, chirpErr{Error: err.Error()})
 		return
