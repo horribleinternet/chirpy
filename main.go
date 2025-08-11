@@ -114,7 +114,7 @@ func chirpConv(dbChirp database.Chirp) chirpResp {
 		chirpMsg: chirpMsg{Body: dbChirp.Body, UserId: dbChirp.UserID}}
 }
 
-func (cfg *apiConfig) handleChirp(writer http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) handleMakeChirp(writer http.ResponseWriter, req *http.Request) {
 	writer.Header()["Content-Type"] = []string{jsonContent}
 	decoder := json.NewDecoder(req.Body)
 	msg := chirpMsg{}
@@ -168,7 +168,7 @@ func (cfg *apiConfig) handleReset(writer http.ResponseWriter, req *http.Request)
 	}
 }
 
-func (cfg *apiConfig) handleChirps(writer http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) handleGetChirps(writer http.ResponseWriter, req *http.Request) {
 	writer.Header()["Content-Type"] = []string{jsonContent}
 	chirps, err := cfg.dbQueries.GetChirps(req.Context())
 	if err != nil {
@@ -180,6 +180,26 @@ func (cfg *apiConfig) handleChirps(writer http.ResponseWriter, req *http.Request
 		jsonChirps[i] = chirpConv(chirps[i])
 	}
 	handleJsonWrite(writer, http.StatusOK, "GetChirps", jsonChirps)
+}
+
+func (cfg *apiConfig) handleGetChirp(writer http.ResponseWriter, req *http.Request) {
+	writer.Header()["Content-Type"] = []string{jsonContent}
+	idstr := req.PathValue("id")
+	if len(idstr) == 0 {
+		handleJsonWrite(writer, http.StatusNotFound, "GetChirp", chirpErr{Error: "invalid id"})
+		return
+	}
+	id, err := uuid.Parse(idstr)
+	if err != nil {
+		handleJsonWrite(writer, http.StatusNotFound, "GetChirp", chirpErr{Error: fmt.Sprint("invalid id ", idstr)})
+		return
+	}
+	chirp, err := cfg.dbQueries.GetChirp(req.Context(), id)
+	if err != nil {
+		handleJsonWrite(writer, http.StatusNotFound, "GetChirp", chirpErr{Error: err.Error()})
+		return
+	}
+	handleJsonWrite(writer, http.StatusOK, "GetChirps", chirpConv(chirp))
 }
 
 func main() {
@@ -196,9 +216,10 @@ func main() {
 	serverMux.HandleFunc("GET /api/healthz", handleHealthz)
 	serverMux.HandleFunc("GET /admin/metrics", apiConf.handleMetrics)
 	serverMux.HandleFunc("POST /admin/reset", apiConf.handleReset)
-	serverMux.HandleFunc("POST /api/chirps", apiConf.middlewareMetricsInc(apiConf.handleChirp))
+	serverMux.HandleFunc("POST /api/chirps", apiConf.middlewareMetricsInc(apiConf.handleMakeChirp))
 	serverMux.HandleFunc("POST /api/users", apiConf.middlewareMetricsInc(apiConf.handleUsers))
-	serverMux.HandleFunc("GET /api/chirps", apiConf.middlewareMetricsInc(apiConf.handleChirps))
+	serverMux.HandleFunc("GET /api/chirps", apiConf.middlewareMetricsInc(apiConf.handleGetChirps))
+	serverMux.HandleFunc("GET /api/chirps/{id}", apiConf.middlewareMetricsInc(apiConf.handleGetChirp))
 	server := http.Server{Handler: serverMux, Addr: ":8080"}
 	err = server.ListenAndServe()
 	fmt.Println(err)
