@@ -4,7 +4,6 @@ import (
 	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,7 +22,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
-	sekrit         []byte
+	sekrit         string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
@@ -72,13 +71,15 @@ type chirpResp struct {
 }
 
 type addUser struct {
-	Password string `json:"password"`
-	Email    string `json:"email"`
+	Password   string `json:"password"`
+	Email      string `json:"email"`
+	ExpireSecs int    `json:"expires_in_seconds"`
 }
 
 type addedUser struct {
 	createHeader
 	Email string `json:"email"`
+	Token string `json:"token"`
 }
 
 const dbEnv = "DB_URL"
@@ -89,6 +90,7 @@ const lengthLimit = 140
 const jsonContent = "application/json"
 const textContent = "text/plain; charset=utf-8"
 const marshalErrorTemplate = "{\"error\":\"Marshal error \"%s\" when trying to respond to \"%s\"}"
+const maxExpireTime = time.Hour
 
 var dirtyWords = []string{"kerfuffle", "sharbert", "fornax"}
 
@@ -127,7 +129,17 @@ func (cfg *apiConfig) handleMakeChirp(writer http.ResponseWriter, req *http.Requ
 	} else if len(msg.Body) > lengthLimit {
 		handleJsonWrite(writer, http.StatusBadRequest, msg.Body, chirpErr{Error: "Chirp is too long"})
 	} else {
-		chirp, err := cfg.dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{Body: clean(msg.Body), UserID: msg.UserId})
+		token, err := auth.GetBearerToken(req.Header)
+		if err != nil {
+			handleJsonWrite(writer, http.StatusUnauthorized, msg.Body, chirpErr{Error: err.Error()})
+			return
+		}
+		id, err := auth.ValidateJWT(token, cfg.sekrit)
+		if err != nil {
+			handleJsonWrite(writer, http.StatusUnauthorized, msg.Body, chirpErr{Error: err.Error()})
+			return
+		}
+		chirp, err := cfg.dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{Body: clean(msg.Body), UserID: id})
 		if err != nil {
 			handleJsonWrite(writer, http.StatusBadRequest, msg.Body, chirpErr{Error: err.Error()})
 		}
@@ -232,7 +244,17 @@ func (cfg *apiConfig) handleLogin(writer http.ResponseWriter, req *http.Request)
 		handleJsonWrite(writer, http.StatusUnauthorized, "login", chirpErr{Error: "Incorrect email or password"})
 		return
 	}
-	handleJsonWrite(writer, http.StatusOK, msg.Email, loginConv(user))
+	duration := time.Hour
+	if msg.ExpireSecs > 0 && time.Second*time.Duration(msg.ExpireSecs) < time.Hour {
+		duration = time.Hour * time.Duration(msg.ExpireSecs)
+	}
+	newUser := loginConv(user)
+	newUser.Token, err = auth.MakeJWT(user.ID, cfg.sekrit, duration)
+	if err != nil {
+		handleJsonWrite(writer, http.StatusBadRequest, "login", chirpErr{Error: err.Error()})
+		return
+	}
+	handleJsonWrite(writer, http.StatusOK, msg.Email, newUser)
 }
 
 func main() {
@@ -244,11 +266,7 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	sekritBytes, err := base64.StdEncoding.DecodeString(sekritStr)
-	if err != nil {
-		fmt.Printf("unable to get secret: %v", err)
-	}
-	apiConf := &apiConfig{dbQueries: database.New(db), platform: os.Getenv(platformEnv), sekrit: sekritBytes}
+	apiConf := &apiConfig{dbQueries: database.New(db), platform: os.Getenv(platformEnv), sekrit: sekritStr}
 	serverMux := http.NewServeMux()
 	serverMux.Handle("/app/", http.StripPrefix("/app", apiConf.middlewareHandlerMetricsInc(http.FileServer(http.Dir(".")))))
 	serverMux.HandleFunc("GET /api/healthz", handleHealthz)
