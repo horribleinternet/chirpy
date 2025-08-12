@@ -19,7 +19,8 @@ func TestHashPass(t *testing.T) {
 	}
 }
 
-const secret = "ohgodnotthebees"
+// ------------ 123456789012345678901234567890123456789012345678901234567890123456789012345678901234567
+const secret = "hiT6/qkbcpGn8LokB7qLxgNDADBn1IvjBtB2W7iMd84vXebR8Vd2TGDs2NURfVebJISiBsE16txLRV8xt9GnSQ=="
 
 func TestJWTLoop(t *testing.T) {
 	testUuid := uuid.New()
@@ -38,7 +39,7 @@ func TestJWTLoop(t *testing.T) {
 	}
 }
 
-func TestJWTTimeut(t *testing.T) {
+func TestJWTTimeout(t *testing.T) {
 	testUuid := uuid.New()
 	tokenstr, err := MakeJWT(testUuid, secret, time.Second)
 	if err != nil {

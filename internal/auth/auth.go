@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -28,7 +30,11 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 	expire := jwt.NumericDate{Time: now.Time.Add(expiresIn)}
 	claim := jwt.RegisteredClaims{Issuer: "chirpy", IssuedAt: &now, ExpiresAt: &expire, Subject: userID.String()}
 	tokenptr := jwt.NewWithClaims(jwt.SigningMethodHS256, claim)
-	tokenstr, err := tokenptr.SignedString([]byte(tokenSecret))
+	byteSecret, err := base64.StdEncoding.DecodeString(tokenSecret)
+	if err != nil {
+		return "", err
+	}
+	tokenstr, err := tokenptr.SignedString(byteSecret)
 	if err != nil {
 		return "", err
 	}
@@ -36,7 +42,11 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 }
 
 func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (any, error) { return []byte(tokenSecret), nil })
+	byteSecret, err := base64.StdEncoding.DecodeString(tokenSecret)
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (any, error) { return byteSecret, nil })
 	if err != nil {
 		return uuid.UUID{}, err
 	}
@@ -53,4 +63,8 @@ func GetBearerToken(headers http.Header) (string, error) {
 		return "", fmt.Errorf("valid bearer token not found in header")
 	}
 	return headerTok[1], nil
+}
+
+func MakeRefreshToken() (string, error) {
+	rand.Read()
 }
