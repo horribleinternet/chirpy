@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -46,6 +48,9 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 }
 
 func GetBearerToken(headers http.Header) (string, error) {
-	fulltoken := headers.Get("Authorization")
-	string.splitN()
+	headerTok := strings.SplitN(headers.Get("Authorization"), " ", 2)
+	if len(headerTok) < 2 || len(headerTok[1]) == 0 {
+		return "", fmt.Errorf("valid bearer token not found in header")
+	}
+	return headerTok[1], nil
 }
