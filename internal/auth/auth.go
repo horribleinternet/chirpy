@@ -65,6 +65,8 @@ func GetBearerToken(headers http.Header) (string, error) {
 	return headerTok[1], nil
 }
 
-func MakeRefreshToken() (string, error) {
-	rand.Read()
+func MakeRefreshToken() string {
+	bytes := make([]byte, 32)
+	rand.Read(bytes)
+	return base64.StdEncoding.EncodeToString((bytes))
 }
