@@ -4,6 +4,7 @@ import (
 	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	sekrit         []byte
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
@@ -81,6 +83,7 @@ type addedUser struct {
 
 const dbEnv = "DB_URL"
 const platformEnv = "PLATFORM"
+const sekritEnv = "SECRET"
 const devPlatform = "dev"
 const lengthLimit = 140
 const jsonContent = "application/json"
@@ -132,11 +135,15 @@ func (cfg *apiConfig) handleMakeChirp(writer http.ResponseWriter, req *http.Requ
 	}
 }
 
-func userConv(dbUser database.CreateUserRow) addedUser {
+func createUserConv(dbUser database.CreateUserRow) addedUser {
 	return addedUser{createHeader: createHeader{Id: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt}, Email: dbUser.Email}
 }
 
-func (cfg *apiConfig) handleUsers(writer http.ResponseWriter, req *http.Request) {
+func loginConv(dbUser database.User) addedUser {
+	return addedUser{createHeader: createHeader{Id: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt}, Email: dbUser.Email}
+}
+
+func (cfg *apiConfig) handleCreateUser(writer http.ResponseWriter, req *http.Request) {
 	writer.Header()["Content-Type"] = []string{jsonContent}
 	decoder := json.NewDecoder(req.Body)
 	msg := addUser{}
@@ -154,7 +161,7 @@ func (cfg *apiConfig) handleUsers(writer http.ResponseWriter, req *http.Request)
 		handleJsonWrite(writer, http.StatusBadRequest, msg.Email, chirpErr{Error: err.Error()})
 		return
 	}
-	handleJsonWrite(writer, http.StatusCreated, msg.Email, userConv(user))
+	handleJsonWrite(writer, http.StatusCreated, msg.Email, createUserConv(user))
 }
 
 func (cfg *apiConfig) handleReset(writer http.ResponseWriter, req *http.Request) {
@@ -208,24 +215,50 @@ func (cfg *apiConfig) handleGetChirp(writer http.ResponseWriter, req *http.Reque
 	handleJsonWrite(writer, http.StatusOK, "GetChirps", chirpConv(chirp))
 }
 
+func (cfg *apiConfig) handleLogin(writer http.ResponseWriter, req *http.Request) {
+	writer.Header()["Content-Type"] = []string{jsonContent}
+	decoder := json.NewDecoder(req.Body)
+	msg := addUser{}
+	if err := decoder.Decode(&msg); err != nil {
+		handleJsonWrite(writer, http.StatusBadRequest, "login", chirpErr{Error: err.Error()})
+		return
+	}
+	user, err := cfg.dbQueries.GetUserByEmail(req.Context(), msg.Email)
+	if err != nil {
+		handleJsonWrite(writer, http.StatusBadRequest, "login", chirpErr{Error: err.Error()})
+		return
+	}
+	if err = auth.CheckPasswordHash(msg.Password, user.HashedPassword); err != nil {
+		handleJsonWrite(writer, http.StatusUnauthorized, "login", chirpErr{Error: "Incorrect email or password"})
+		return
+	}
+	handleJsonWrite(writer, http.StatusOK, msg.Email, loginConv(user))
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv(dbEnv)
+	sekritStr := os.Getenv(sekritEnv)
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	apiConf := &apiConfig{dbQueries: database.New(db), platform: os.Getenv(platformEnv)}
+	sekritBytes, err := base64.StdEncoding.DecodeString(sekritStr)
+	if err != nil {
+		fmt.Printf("unable to get secret: %v", err)
+	}
+	apiConf := &apiConfig{dbQueries: database.New(db), platform: os.Getenv(platformEnv), sekrit: sekritBytes}
 	serverMux := http.NewServeMux()
 	serverMux.Handle("/app/", http.StripPrefix("/app", apiConf.middlewareHandlerMetricsInc(http.FileServer(http.Dir(".")))))
 	serverMux.HandleFunc("GET /api/healthz", handleHealthz)
 	serverMux.HandleFunc("GET /admin/metrics", apiConf.handleMetrics)
 	serverMux.HandleFunc("POST /admin/reset", apiConf.handleReset)
 	serverMux.HandleFunc("POST /api/chirps", apiConf.middlewareMetricsInc(apiConf.handleMakeChirp))
-	serverMux.HandleFunc("POST /api/users", apiConf.middlewareMetricsInc(apiConf.handleUsers))
+	serverMux.HandleFunc("POST /api/users", apiConf.middlewareMetricsInc(apiConf.handleCreateUser))
 	serverMux.HandleFunc("GET /api/chirps", apiConf.middlewareMetricsInc(apiConf.handleGetChirps))
 	serverMux.HandleFunc("GET /api/chirps/{id}", apiConf.middlewareMetricsInc(apiConf.handleGetChirp))
+	serverMux.HandleFunc("POST /api/login", apiConf.middlewareMetricsInc(apiConf.handleLogin))
 	server := http.Server{Handler: serverMux, Addr: ":8080"}
 	err = server.ListenAndServe()
 	fmt.Println(err)
