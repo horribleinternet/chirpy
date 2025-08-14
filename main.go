@@ -71,14 +71,28 @@ type chirpResp struct {
 }
 
 type addUser struct {
-	Password   string `json:"password"`
-	Email      string `json:"email"`
-	ExpireSecs int    `json:"expires_in_seconds"`
+	Password string `json:"password"`
+	Email    string `json:"email"`
 }
 
 type addedUser struct {
 	createHeader
 	Email string `json:"email"`
+}
+
+type loginUser struct {
+	Password string `json:"password"`
+	Email    string `json:"email"`
+}
+
+type loggedinUser struct {
+	createHeader
+	Email        string `json:"email"`
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+type refreshedToken struct {
 	Token string `json:"token"`
 }
 
@@ -151,8 +165,8 @@ func createUserConv(dbUser database.CreateUserRow) addedUser {
 	return addedUser{createHeader: createHeader{Id: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt}, Email: dbUser.Email}
 }
 
-func loginConv(dbUser database.User) addedUser {
-	return addedUser{createHeader: createHeader{Id: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt}, Email: dbUser.Email}
+func loginConv(dbUser database.User) loggedinUser {
+	return loggedinUser{createHeader: createHeader{Id: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt}, Email: dbUser.Email}
 }
 
 func (cfg *apiConfig) handleCreateUser(writer http.ResponseWriter, req *http.Request) {
@@ -230,7 +244,7 @@ func (cfg *apiConfig) handleGetChirp(writer http.ResponseWriter, req *http.Reque
 func (cfg *apiConfig) handleLogin(writer http.ResponseWriter, req *http.Request) {
 	writer.Header()["Content-Type"] = []string{jsonContent}
 	decoder := json.NewDecoder(req.Body)
-	msg := addUser{}
+	msg := loginUser{}
 	if err := decoder.Decode(&msg); err != nil {
 		handleJsonWrite(writer, http.StatusBadRequest, "login", chirpErr{Error: err.Error()})
 		return
@@ -244,19 +258,52 @@ func (cfg *apiConfig) handleLogin(writer http.ResponseWriter, req *http.Request)
 		handleJsonWrite(writer, http.StatusUnauthorized, "login", chirpErr{Error: "Incorrect email or password"})
 		return
 	}
-	duration := time.Hour
-	if msg.ExpireSecs > 0 && time.Second*time.Duration(msg.ExpireSecs) < time.Hour {
-		duration = time.Hour * time.Duration(msg.ExpireSecs)
-	}
 	newUser := loginConv(user)
-	newUser.Token, err = auth.MakeJWT(user.ID, cfg.sekrit, duration)
+	newUser.Token, err = auth.MakeJWT(user.ID, cfg.sekrit, time.Hour)
 	if err != nil {
 		handleJsonWrite(writer, http.StatusBadRequest, "login", chirpErr{Error: err.Error()})
+		return
+	}
+	refreshParams := database.AddRefreshTokenParams{Token: auth.MakeRefreshToken(), Email: msg.Email}
+	newUser.RefreshToken, err = cfg.dbQueries.AddRefreshToken(req.Context(), refreshParams)
+	if err != nil {
+		handleJsonWrite(writer, http.StatusInternalServerError, "login", chirpErr{Error: err.Error()})
 		return
 	}
 	handleJsonWrite(writer, http.StatusOK, msg.Email, newUser)
 }
 
+func (cfg *apiConfig) handleRefresh(writer http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		writer.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	id, err := cfg.dbQueries.GetUserByToken(req.Context(), token)
+	if err != nil {
+		writer.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	var tokenMsg refreshedToken
+	tokenMsg.Token, err = auth.MakeJWT(id, cfg.sekrit, time.Hour)
+	if err != nil {
+		writer.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	writer.Header()["Content-Type"] = []string{jsonContent}
+	handleJsonWrite(writer, http.StatusOK, "refresh", tokenMsg)
+}
+
+/*
+	func (cfg *apiConfig) handleRevoke(writer http.ResponseWriter, req *http.Request) {
+		token, err := auth.GetBearerToken(req.Header)
+		if err != nil {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+}
+*/
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv(dbEnv)
@@ -277,6 +324,8 @@ func main() {
 	serverMux.HandleFunc("GET /api/chirps", apiConf.middlewareMetricsInc(apiConf.handleGetChirps))
 	serverMux.HandleFunc("GET /api/chirps/{id}", apiConf.middlewareMetricsInc(apiConf.handleGetChirp))
 	serverMux.HandleFunc("POST /api/login", apiConf.middlewareMetricsInc(apiConf.handleLogin))
+	serverMux.HandleFunc("POST /api/refresh", apiConf.middlewareMetricsInc(apiConf.handleRefresh))
+	//serverMux.HandleFunc("POST /api/revoke", apiConf.middlewareMetricsInc(apiConf.handleRevoke))
 	server := http.Server{Handler: serverMux, Addr: ":8080"}
 	err = server.ListenAndServe()
 	fmt.Println(err)
