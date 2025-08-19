@@ -294,16 +294,14 @@ func (cfg *apiConfig) handleRefresh(writer http.ResponseWriter, req *http.Reques
 	handleJsonWrite(writer, http.StatusOK, "refresh", tokenMsg)
 }
 
-/*
-	func (cfg *apiConfig) handleRevoke(writer http.ResponseWriter, req *http.Request) {
-		token, err := auth.GetBearerToken(req.Header)
-		if err != nil {
-			writer.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-
+func (cfg *apiConfig) handleRevoke(writer http.ResponseWriter, req *http.Request) {
+	//token, err := auth.GetBearerToken(req.Header)
+	//if err != nil {
+	//	writer.WriteHeader(http.StatusUnauthorized)
+	//	return
+	//}
 }
-*/
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv(dbEnv)
