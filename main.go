@@ -285,7 +285,7 @@ func (cfg *apiConfig) handleRefresh(writer http.ResponseWriter, req *http.Reques
 		return
 	}
 	var tokenMsg refreshedToken
-	tokenMsg.Token, err = auth.MakeJWT(id, cfg.sekrit, time.Hour)
+	tokenMsg.Token, err = auth.MakeJWT(id.UserID, cfg.sekrit, time.Hour)
 	if err != nil {
 		writer.WriteHeader(http.StatusUnauthorized)
 		return
@@ -295,11 +295,17 @@ func (cfg *apiConfig) handleRefresh(writer http.ResponseWriter, req *http.Reques
 }
 
 func (cfg *apiConfig) handleRevoke(writer http.ResponseWriter, req *http.Request) {
-	//token, err := auth.GetBearerToken(req.Header)
-	//if err != nil {
-	//	writer.WriteHeader(http.StatusUnauthorized)
-	//	return
-	//}
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		writer.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	err = cfg.dbQueries.RevokeToken(req.Context(), token)
+	if err != nil {
+		handleJsonWrite(writer, http.StatusInternalServerError, "revoke", chirpErr{Error: err.Error()})
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
 }
 
 func main() {
@@ -323,7 +329,7 @@ func main() {
 	serverMux.HandleFunc("GET /api/chirps/{id}", apiConf.middlewareMetricsInc(apiConf.handleGetChirp))
 	serverMux.HandleFunc("POST /api/login", apiConf.middlewareMetricsInc(apiConf.handleLogin))
 	serverMux.HandleFunc("POST /api/refresh", apiConf.middlewareMetricsInc(apiConf.handleRefresh))
-	//serverMux.HandleFunc("POST /api/revoke", apiConf.middlewareMetricsInc(apiConf.handleRevoke))
+	serverMux.HandleFunc("POST /api/revoke", apiConf.middlewareMetricsInc(apiConf.handleRevoke))
 	server := http.Server{Handler: serverMux, Addr: ":8080"}
 	err = server.ListenAndServe()
 	fmt.Println(err)
