@@ -133,6 +133,17 @@ func chirpConv(dbChirp database.Chirp) chirpResp {
 	return chirpResp{createHeader: createHeader{Id: dbChirp.ID, CreatedAt: dbChirp.CreatedAt, UpdatedAt: dbChirp.UpdatedAt},
 		chirpMsg: chirpMsg{Body: dbChirp.Body, UserId: dbChirp.UserID}}
 }
+func (cfg *apiConfig) validateUser(head http.Header) (uuid.UUID, error) {
+	token, err := auth.GetBearerToken(head)
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+	id, err := auth.ValidateJWT(token, cfg.sekrit)
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+	return id, nil
+}
 
 func (cfg *apiConfig) handleMakeChirp(writer http.ResponseWriter, req *http.Request) {
 	writer.Header()["Content-Type"] = []string{jsonContent}
@@ -143,12 +154,7 @@ func (cfg *apiConfig) handleMakeChirp(writer http.ResponseWriter, req *http.Requ
 	} else if len(msg.Body) > lengthLimit {
 		handleJsonWrite(writer, http.StatusBadRequest, msg.Body, chirpErr{Error: "Chirp is too long"})
 	} else {
-		token, err := auth.GetBearerToken(req.Header)
-		if err != nil {
-			handleJsonWrite(writer, http.StatusUnauthorized, msg.Body, chirpErr{Error: err.Error()})
-			return
-		}
-		id, err := auth.ValidateJWT(token, cfg.sekrit)
+		id, err := cfg.validateUser(req.Header)
 		if err != nil {
 			handleJsonWrite(writer, http.StatusUnauthorized, msg.Body, chirpErr{Error: err.Error()})
 			return
@@ -162,6 +168,10 @@ func (cfg *apiConfig) handleMakeChirp(writer http.ResponseWriter, req *http.Requ
 }
 
 func createUserConv(dbUser database.CreateUserRow) addedUser {
+	return addedUser{createHeader: createHeader{Id: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt}, Email: dbUser.Email}
+}
+
+func updateUserConv(dbUser database.UpdateUserRow) addedUser {
 	return addedUser{createHeader: createHeader{Id: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt}, Email: dbUser.Email}
 }
 
@@ -312,6 +322,42 @@ func (cfg *apiConfig) handleRevoke(writer http.ResponseWriter, req *http.Request
 	writer.WriteHeader(http.StatusNoContent)
 }
 
+func (cfg *apiConfig) handleUserPut(writer http.ResponseWriter, req *http.Request) {
+	writer.Header()["Content-Type"] = []string{jsonContent}
+	decoder := json.NewDecoder(req.Body)
+	msg := loginUser{}
+	if err := decoder.Decode(&msg); err != nil {
+		handleJsonWrite(writer, http.StatusBadRequest, "update", chirpErr{Error: err.Error()})
+		return
+	}
+	hashed, err := auth.HashPassword(msg.Password)
+	if err != nil {
+		handleJsonWrite(writer, http.StatusInternalServerError, "update", chirpErr{Error: err.Error()})
+		return
+	}
+	id, err := cfg.validateUser(req.Header)
+	if err != nil {
+		handleJsonWrite(writer, http.StatusUnauthorized, msg.Email, chirpErr{Error: err.Error()})
+		return
+	}
+	user, err := cfg.dbQueries.UpdateUser(req.Context(), database.UpdateUserParams{Email: msg.Email, HashedPassword: hashed, ID: id})
+	if err != nil {
+		handleJsonWrite(writer, http.StatusUnauthorized, msg.Email, chirpErr{Error: err.Error()})
+		return
+	}
+	handleJsonWrite(writer, http.StatusOK, msg.Email, updateUserConv(user))
+}
+
+/*
+	func (cfg *apiConfig) handleDeleteChirp(writer http.ResponseWriter, req *http.Request) {
+		id, err := cfg.validateUser(req.Header)
+		if err != nil {
+			handleJsonWrite(writer, http.StatusUnauthorized, "delete chirp", chirpErr{Error: err.Error()})
+			return
+		}
+
+}
+*/
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv(dbEnv)
@@ -334,6 +380,9 @@ func main() {
 	serverMux.HandleFunc("POST /api/login", apiConf.middlewareMetricsInc(apiConf.handleLogin))
 	serverMux.HandleFunc("POST /api/refresh", apiConf.middlewareMetricsInc(apiConf.handleRefresh))
 	serverMux.HandleFunc("POST /api/revoke", apiConf.middlewareMetricsInc(apiConf.handleRevoke))
+	serverMux.HandleFunc("PUT /api/users", apiConf.middlewareMetricsInc(apiConf.handleUserPut))
+	//serverMux.HandleFunc("DELETE /api/chirps/{id}", apiConf.middlewareMetricsInc(apiConf.handleDeleteChirp))
+
 	server := http.Server{Handler: serverMux, Addr: ":8080"}
 	err = server.ListenAndServe()
 	fmt.Println(err)
