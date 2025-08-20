@@ -284,6 +284,10 @@ func (cfg *apiConfig) handleRefresh(writer http.ResponseWriter, req *http.Reques
 		writer.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	if id.RevokedAt.Valid || id.ExpiresAt.Compare(time.Now()) < 0 {
+		writer.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	var tokenMsg refreshedToken
 	tokenMsg.Token, err = auth.MakeJWT(id.UserID, cfg.sekrit, time.Hour)
 	if err != nil {
