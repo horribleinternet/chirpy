@@ -231,16 +231,19 @@ func (cfg *apiConfig) handleGetChirps(writer http.ResponseWriter, req *http.Requ
 	handleJsonWrite(writer, http.StatusOK, "GetChirps", jsonChirps)
 }
 
-func (cfg *apiConfig) handleGetChirp(writer http.ResponseWriter, req *http.Request) {
-	writer.Header()["Content-Type"] = []string{jsonContent}
+func parseID(req *http.Request) (uuid.UUID, error) {
 	idstr := req.PathValue("id")
 	if len(idstr) == 0 {
-		handleJsonWrite(writer, http.StatusNotFound, "GetChirp", chirpErr{Error: "invalid id"})
-		return
+		return uuid.UUID{}, fmt.Errorf("invalid id")
 	}
-	id, err := uuid.Parse(idstr)
+	return uuid.Parse(idstr)
+}
+
+func (cfg *apiConfig) handleGetChirp(writer http.ResponseWriter, req *http.Request) {
+	writer.Header()["Content-Type"] = []string{jsonContent}
+	id, err := parseID(req)
 	if err != nil {
-		handleJsonWrite(writer, http.StatusNotFound, "GetChirp", chirpErr{Error: fmt.Sprint("invalid id ", idstr)})
+		handleJsonWrite(writer, http.StatusNotFound, "GetChirp", chirpErr{Error: err.Error()})
 		return
 	}
 	chirp, err := cfg.dbQueries.GetChirp(req.Context(), id)
@@ -348,16 +351,32 @@ func (cfg *apiConfig) handleUserPut(writer http.ResponseWriter, req *http.Reques
 	handleJsonWrite(writer, http.StatusOK, msg.Email, updateUserConv(user))
 }
 
-/*
-	func (cfg *apiConfig) handleDeleteChirp(writer http.ResponseWriter, req *http.Request) {
-		id, err := cfg.validateUser(req.Header)
-		if err != nil {
-			handleJsonWrite(writer, http.StatusUnauthorized, "delete chirp", chirpErr{Error: err.Error()})
-			return
-		}
-
+func (cfg *apiConfig) handleDeleteChirp(writer http.ResponseWriter, req *http.Request) {
+	var args database.DeleteChirpParams
+	var err error
+	args.UserID, err = cfg.validateUser(req.Header)
+	if err != nil {
+		writer.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	args.ID, err = parseID(req)
+	if err != nil {
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
+	_, err = cfg.dbQueries.GetChirp(req.Context(), args.ID)
+	if err != nil {
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
+	_, err = cfg.dbQueries.DeleteChirp(req.Context(), args)
+	if err != nil {
+		writer.WriteHeader(http.StatusForbidden)
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
 }
-*/
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv(dbEnv)
@@ -381,7 +400,7 @@ func main() {
 	serverMux.HandleFunc("POST /api/refresh", apiConf.middlewareMetricsInc(apiConf.handleRefresh))
 	serverMux.HandleFunc("POST /api/revoke", apiConf.middlewareMetricsInc(apiConf.handleRevoke))
 	serverMux.HandleFunc("PUT /api/users", apiConf.middlewareMetricsInc(apiConf.handleUserPut))
-	//serverMux.HandleFunc("DELETE /api/chirps/{id}", apiConf.middlewareMetricsInc(apiConf.handleDeleteChirp))
+	serverMux.HandleFunc("DELETE /api/chirps/{id}", apiConf.middlewareMetricsInc(apiConf.handleDeleteChirp))
 
 	server := http.Server{Handler: serverMux, Addr: ":8080"}
 	err = server.ListenAndServe()
